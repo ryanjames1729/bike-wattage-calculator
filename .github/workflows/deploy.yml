@@ -34,9 +34,7 @@ jobs:
         run: npm run build
         working-directory: frontend
         env:
-          # Set this to /your-repo-name/ if your site is at username.github.io/your-repo-name/
-          # Leave as / if you're using a custom domain or a username.github.io repo
-          VITE_BASE_PATH: ${{ vars.VITE_BASE_PATH || '/' }}
+          VITE_BASE_PATH: /bike-wattage-calculator/
           # Set this in GitHub repo Settings > Variables to your deployed backend URL
           # e.g. https://your-backend.railway.app
           VITE_BACKEND_URL: ${{ vars.VITE_BACKEND_URL }}
