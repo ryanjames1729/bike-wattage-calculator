@@ -3,6 +3,7 @@ import { DataPoint, PowerPoint, AnalysisResults, BiometricsState, BikeState, RID
 const G = 9.81;          // gravitational acceleration m/s²
 const RHO = 1.225;       // air density kg/m³ at sea level
 const EFFICIENCY = 0.976; // drivetrain efficiency (2.4% loss)
+const MAX_SPEED_MS = 25;  // ~90 km/h — hard cap to reject GPS teleport artifacts
 
 /**
  * Resolve CdA from riding position key.
@@ -69,6 +70,11 @@ function calcElevationGain(points: DataPoint[]): number {
 /**
  * Main power calculation function.
  * Uses cycling physics model for each data point.
+ *
+ * GPS fix: raw 1-second speed is noisy (positional errors create fake
+ * high-speed bursts). We cap speed at MAX_SPEED_MS then apply a rolling
+ * average over a 5-second window before computing power. This eliminates
+ * the v³ amplification that inflated air-drag power by ~15x on noisy data.
  */
 export function calculatePower(
   points: DataPoint[],
@@ -82,48 +88,40 @@ export function calculatePower(
   const CdA = getCdA(biometrics.ridingPosition);
   const Crr = getCrr(bike.terrainType);
 
-  const rawPowers: number[] = [];
-  const powerPoints: PowerPoint[] = [];
+  // --- Pass 1: compute per-segment raw speed and elevation delta ---
+  interface Segment {
+    timeSeconds: number;
+    distance: number;
+    rawSpeed: number;    // m/s, capped at MAX_SPEED_MS
+    elevDelta: number;   // metres
+    ds: number;          // horizontal segment distance in metres
+  }
+
+  const segments: Segment[] = [];
 
   for (let i = 1; i < points.length; i++) {
     const prev = points[i - 1];
     const curr = points[i];
 
-    const dt = curr.time - prev.time;          // seconds
-    const ds = curr.distance - prev.distance;  // metres
+    const dt = curr.time - prev.time;    // seconds
+    const ds = curr.distance - prev.distance; // metres
 
-    // Skip bad segments
     if (dt <= 0 || ds < 0) continue;
 
-    // Speed in m/s
-    const v = ds / dt;
-
-    // Gradient angle
+    const rawSpeed = Math.min(ds / dt, MAX_SPEED_MS);
     const elevDelta = curr.elevation - prev.elevation;
-    const theta = Math.atan2(elevDelta, ds);
 
-    // Power components
-    const pGravity = mTotal * G * v * Math.sin(theta);
-    const pRolling = Crr * mTotal * G * v * Math.cos(theta);
-    const pAir = 0.5 * RHO * CdA * Math.pow(v, 3);
-
-    const pRaw = (pGravity + pRolling + pAir) / EFFICIENCY;
-
-    // Clamp to 0 (no negative power – coasting)
-    const pClamped = Math.max(0, pRaw);
-    rawPowers.push(pClamped);
-
-    powerPoints.push({
+    segments.push({
       timeSeconds: curr.time,
-      power: pClamped,
-      smoothedPower: 0, // filled in after rolling average
-      speed: v,
-      distance: curr.distance
+      distance: curr.distance,
+      rawSpeed,
+      elevDelta,
+      ds,
     });
   }
 
-  // 30-second rolling average: estimate window based on median dt
-  // Find median dt
+  // --- Pass 2: smooth speed over a 5-second rolling window ---
+  // Estimate window size from median dt
   const dts: number[] = [];
   for (let i = 1; i < points.length; i++) {
     const dt = points[i].time - points[i - 1].time;
@@ -131,22 +129,62 @@ export function calculatePower(
   }
   dts.sort((a, b) => a - b);
   const medianDt = dts.length > 0 ? dts[Math.floor(dts.length / 2)] : 1;
-  const windowSize = Math.max(1, Math.round(30 / medianDt));
 
-  const smoothed = rollingAverage(rawPowers, windowSize);
+  const speedSmoothWindow = Math.max(1, Math.round(5 / medianDt));
+  const rawSpeeds = segments.map(s => s.rawSpeed);
+  const smoothedSpeeds = rollingAverage(rawSpeeds, speedSmoothWindow);
 
-  // Apply smoothed values
+  // Also smooth elevation deltas over the same window to reduce GPS elevation noise
+  const rawElevDeltas = segments.map(s => s.elevDelta);
+  const smoothedElevDeltas = rollingAverage(rawElevDeltas, speedSmoothWindow);
+
+  // --- Pass 3: calculate power using smoothed speed and elevation ---
+  const rawPowers: number[] = [];
+  const powerPoints: PowerPoint[] = [];
+
+  for (let i = 0; i < segments.length; i++) {
+    const seg = segments[i];
+    const v = smoothedSpeeds[i];
+    const elevDelta = smoothedElevDeltas[i];
+
+    const ds = seg.ds > 0 ? seg.ds : v; // fallback if ds is tiny
+    const theta = Math.atan2(elevDelta, ds);
+
+    const pGravity = mTotal * G * v * Math.sin(theta);
+    const pRolling = Crr * mTotal * G * v * Math.cos(theta);
+    const pAir = 0.5 * RHO * CdA * Math.pow(v, 3);
+
+    const pRaw = (pGravity + pRolling + pAir) / EFFICIENCY;
+
+    // Clamp to 0 (no negative power — coasting)
+    const pClamped = Math.max(0, pRaw);
+    rawPowers.push(pClamped);
+
+    powerPoints.push({
+      timeSeconds: seg.timeSeconds,
+      power: pClamped,
+      smoothedPower: 0,
+      speed: v,
+      distance: seg.distance,
+    });
+  }
+
+  // --- Pass 4: 30-second smoothing for the chart ---
+  const powerSmoothWindow = Math.max(1, Math.round(30 / medianDt));
+  const smoothed = rollingAverage(rawPowers, powerSmoothWindow);
+
   for (let i = 0; i < powerPoints.length; i++) {
     powerPoints[i].smoothedPower = smoothed[i];
   }
 
-  // Average watts: mean of non-zero power values
-  const nonZero = rawPowers.filter(p => p > 0);
-  const averageWatts = nonZero.length > 0
-    ? nonZero.reduce((a, b) => a + b, 0) / nonZero.length
+  // --- Averages and stats ---
+  // Use ALL values (including zeros from coasting) for the true average.
+  // Excluding zeros inflates the figure by ignoring recovery / descent time.
+  const averageWatts = rawPowers.length > 0
+    ? rawPowers.reduce((a, b) => a + b, 0) / rawPowers.length
     : 0;
 
-  // Peak watts: 95th percentile of smoothed power (avoids GPS artifacts)
+  // Peak watts: 95th percentile of smoothed power (avoids residual spikes)
   const peakWatts = percentile(smoothed, 95);
 
   const duration = points[points.length - 1].time - points[0].time;
