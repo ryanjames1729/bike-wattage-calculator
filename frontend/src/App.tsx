@@ -4,20 +4,21 @@ import RideInput from './components/RideInput';
 import BiometricsForm from './components/BiometricsForm';
 import BikeForm from './components/BikeForm';
 import ResultsDisplay from './components/ResultsDisplay';
-import { DataPoint, BiometricsState, BikeState, AnalysisResults, ActivityMeta, AppStep } from './types';
+import { DataPoint, BiometricsState, BikeState, AnalysisResults, ActivityMeta, AppStep, BIKE_PRESETS } from './types';
 import { fetchActivity, storeToken, getStoredToken } from './utils/stravaApi';
 import { calculatePower } from './utils/powerCalculator';
 
 const DEFAULT_BIOMETRICS: BiometricsState = {
-  weightValue: 75,
-  weightUnit: 'kg',
+  weightValue: 175,
+  weightUnit: 'lbs',
   ridingPosition: 'sport'
 };
 
 const DEFAULT_BIKE: BikeState = {
-  weightValue: 8,
-  weightUnit: 'kg',
-  terrainType: 'road'
+  bikePreset: 'rei-adv',
+  weightValue: 22,
+  weightUnit: 'lbs',
+  terrainType: 'gravel'
 };
 
 type LoadingStage = 'fetching' | 'calculating' | null;
@@ -321,19 +322,17 @@ export default function App() {
               <p className="text-slate-400 font-medium mb-2">Summary</p>
               <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-slate-500">
                 <span>Rider weight</span>
-                <span className="text-slate-300">
-                  {biometrics.weightValue} {biometrics.weightUnit}
-                  {biometrics.weightUnit === 'lbs' && ` (${(biometrics.weightValue * 0.453592).toFixed(1)} kg)`}
-                </span>
+                <span className="text-slate-300">175 lbs</span>
                 <span>Riding position</span>
                 <span className="text-slate-300 capitalize">{biometrics.ridingPosition}</span>
-                <span>Bike weight</span>
+                <span>Bike</span>
                 <span className="text-slate-300">
-                  {bike.weightValue} {bike.weightUnit}
-                  {bike.weightUnit === 'lbs' && ` (${(bike.weightValue * 0.453592).toFixed(1)} kg)`}
+                  {BIKE_PRESETS.find(p => p.value === bike.bikePreset)?.label ?? bike.bikePreset}
                 </span>
-                <span>Terrain</span>
-                <span className="text-slate-300 capitalize">{bike.terrainType}</span>
+                <span>Tires</span>
+                <span className="text-slate-300">
+                  {BIKE_PRESETS.find(p => p.value === bike.bikePreset)?.description ?? bike.terrainType}
+                </span>
                 <span>Data points</span>
                 <span className="text-slate-300">{dataPoints.length.toLocaleString()}</span>
               </div>

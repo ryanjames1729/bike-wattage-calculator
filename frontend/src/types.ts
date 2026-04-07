@@ -16,6 +16,7 @@ export interface BiometricsState {
 
 // Bike specs form state
 export interface BikeState {
+  bikePreset: 'rei-adv' | 'state-5055';
   weightValue: number;
   weightUnit: 'kg' | 'lbs';
   terrainType: 'road' | 'gravel' | 'mountain';
@@ -68,4 +69,24 @@ export const TERRAIN_TYPES = [
   { value: 'road',     label: 'Road (Smooth Tires)',    crr: 0.004 },
   { value: 'gravel',   label: 'Gravel / Mixed',         crr: 0.006 },
   { value: 'mountain', label: 'Mountain / Knobby',      crr: 0.010 }
+] as const;
+
+// Preset bike options
+export const BIKE_PRESETS = [
+  {
+    value: 'rei-adv',
+    label: 'REI Co-op ADV 1.2',
+    description: 'Gravel tires',
+    weightValue: 22,
+    weightUnit: 'lbs' as const,
+    terrainType: 'gravel' as const,
+  },
+  {
+    value: 'state-5055',
+    label: 'State 5055',
+    description: 'Knobby mountain bike tires',
+    weightValue: 21,
+    weightUnit: 'lbs' as const,
+    terrainType: 'mountain' as const,
+  },
 ] as const;
