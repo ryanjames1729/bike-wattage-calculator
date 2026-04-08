@@ -520,7 +520,9 @@ app.get('/webhook/register', async (req, res) => {
     return res.status(500).json({ error: 'Strava credentials not configured' });
   }
 
-  const callbackUrl = `${req.protocol}://${req.get('host')}/webhook`;
+  // Use x-forwarded-proto on Vercel (req.protocol is always 'http' behind their proxy)
+  const protocol = req.headers['x-forwarded-proto'] || req.protocol;
+  const callbackUrl = `${protocol}://${req.get('host')}/webhook`;
 
   try {
     const resp = await axios.post(
