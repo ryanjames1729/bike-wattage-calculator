@@ -23,6 +23,8 @@ const DEFAULT_BIKE: BikeState = {
 
 type LoadingStage = 'fetching' | 'calculating' | null;
 
+const BACKEND_BASE = import.meta.env.VITE_BACKEND_URL || 'http://localhost:3001';
+
 export default function App() {
   const [step, setStep] = useState<AppStep>('ride-input');
   const [dataPoints, setDataPoints] = useState<DataPoint[]>([]);
@@ -33,6 +35,10 @@ export default function App() {
   const [results, setResults] = useState<AnalysisResults | null>(null);
   const [error, setError] = useState('');
   const [loadingStage, setLoadingStage] = useState<LoadingStage>(null);
+  const [syncAthleteId, setSyncAthleteId] = useState<string | null>(
+    () => localStorage.getItem('strava_athlete_id')
+  );
+  const [syncBikePreset, setSyncBikePreset] = useState<string>('rei-adv');
 
   // Handle Strava OAuth callback params in the URL.
   // The backend redirects to /?strava_token=...&activity_id=... so this works
@@ -42,6 +48,8 @@ export default function App() {
     const token = params.get('strava_token');
     const activityId = params.get('activity_id');
     const err = params.get('strava_error');
+    const stravaStatus = params.get('strava');
+    const athleteId = params.get('athlete_id');
 
     if (!token && !err) return; // Normal page load, nothing to handle
 
@@ -52,6 +60,11 @@ export default function App() {
       setError(`Strava authorisation failed: ${err}. Please try again.`);
       setStep('ride-input');
       return;
+    }
+
+    if (stravaStatus === 'connected' && athleteId) {
+      localStorage.setItem('strava_athlete_id', athleteId);
+      setSyncAthleteId(athleteId);
     }
 
     if (token) {
@@ -253,17 +266,71 @@ export default function App() {
 
         {/* Step 1: Ride Input */}
         {step === 'ride-input' && (
-          <div className="bg-slate-800/40 border border-slate-700 rounded-2xl p-6 sm:p-8">
-            <div className="mb-6">
-              <h2 className="text-xl font-bold text-slate-100">Step 1 — Load Your Ride</h2>
-              <p className="text-slate-400 text-sm mt-1">
-                Connect with Strava to analyse from URL, or export GPX from any platform.
-              </p>
+          <div className="space-y-4">
+            <div className="bg-slate-800/40 border border-slate-700 rounded-2xl p-6 sm:p-8">
+              <div className="mb-6">
+                <h2 className="text-xl font-bold text-slate-100">Step 1 — Load Your Ride</h2>
+                <p className="text-slate-400 text-sm mt-1">
+                  Connect with Strava to analyse from URL, or export GPX from any platform.
+                </p>
+              </div>
+              <RideInput
+                onStravaConnect={handleStravaConnect}
+                onGpxLoaded={handleGpxLoaded}
+              />
             </div>
-            <RideInput
-              onStravaConnect={handleStravaConnect}
-              onGpxLoaded={handleGpxLoaded}
-            />
+
+            {/* Strava Auto-Sync card */}
+            {syncAthleteId ? (
+              <div className="bg-green-500/10 border border-green-500/30 rounded-2xl p-4 sm:p-5">
+                <div className="flex items-center justify-between mb-3">
+                  <div className="flex items-center gap-2">
+                    <span className="w-2 h-2 rounded-full bg-green-400 inline-block" />
+                    <span className="text-green-300 font-medium text-sm">Auto-sync active</span>
+                  </div>
+                  <button
+                    onClick={() => {
+                      localStorage.removeItem('strava_athlete_id');
+                      setSyncAthleteId(null);
+                    }}
+                    className="text-xs text-slate-500 hover:text-slate-300 transition-colors"
+                  >
+                    Disconnect
+                  </button>
+                </div>
+                <p className="text-slate-400 text-xs mb-3">
+                  Power will be automatically calculated and added to your Strava activity description when you upload a ride.
+                </p>
+                <div className="flex items-center gap-3">
+                  <label className="text-xs text-slate-400 whitespace-nowrap">Bike for sync:</label>
+                  <select
+                    value={syncBikePreset}
+                    onChange={async (e) => {
+                      const newPreset = e.target.value;
+                      setSyncBikePreset(newPreset);
+                      try {
+                        await fetch(`${BACKEND_BASE}/api/preferences/${syncAthleteId}`, {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({ bike_preset: newPreset })
+                        });
+                      } catch {
+                        // Silently fail — preference will update on next webhook
+                      }
+                    }}
+                    className="flex-1 bg-slate-700 border border-slate-600 text-slate-200 text-xs rounded-lg px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-green-500/50"
+                  >
+                    {BIKE_PRESETS.map(p => (
+                      <option key={p.value} value={p.value}>{p.label}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+            ) : (
+              <p className="text-center text-xs text-slate-600">
+                Connect with Strava above to enable auto-sync — power analysis will be added to your activity descriptions automatically.
+              </p>
+            )}
           </div>
         )}
 
