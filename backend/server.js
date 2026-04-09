@@ -267,7 +267,8 @@ app.get('/auth/strava', (req, res) => {
     return res.status(500).json({ error: 'STRAVA_CLIENT_ID not configured' });
   }
 
-  const redirectUri = `${req.protocol}://${req.get('host')}/auth/strava/callback`;
+  const protocol = req.headers['x-forwarded-proto'] || req.protocol;
+  const redirectUri = `${protocol}://${req.get('host')}/auth/strava/callback`;
   const scope = 'activity:read_all,activity:write';
   const state = activityId ? encodeURIComponent(activityId) : '';
 
