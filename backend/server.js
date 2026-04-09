@@ -184,7 +184,7 @@ async function getAthlete(athleteId) {
     .from('athletes')
     .select('*')
     .eq('athlete_id', athleteId)
-    .single();
+    .maybeSingle();
   if (error) {
     console.error('getAthlete error:', error.message);
     return null;
