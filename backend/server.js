@@ -329,6 +329,51 @@ app.get('/auth/strava/callback', async (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
+// One-time athlete registration using an existing access token
+// GET /auth/register?token=ACCESS_TOKEN
+// ---------------------------------------------------------------------------
+app.get('/auth/register', async (req, res) => {
+  const { token } = req.query;
+  if (!token) return res.status(400).json({ error: 'token is required' });
+  if (!supabase) return res.status(503).json({ error: 'Supabase not configured' });
+
+  try {
+    // Fetch athlete profile from Strava to get their ID and validate token
+    const athleteResp = await axios.get('https://www.strava.com/api/v3/athlete', {
+      headers: { Authorization: `Bearer ${token}` }
+    });
+    const athlete = athleteResp.data;
+    const athleteId = athlete.id?.toString();
+
+    if (!athleteId) return res.status(400).json({ error: 'Could not determine athlete ID from token' });
+
+    // Save to Supabase with defaults (no refresh_token available from access token alone)
+    const { data: result, error } = await supabase
+      .from('athletes')
+      .upsert({
+        athlete_id: athleteId,
+        access_token: token,
+        refresh_token: 'pending',
+        expires_at: Math.floor(Date.now() / 1000) + 21600, // 6 hours from now
+        bike_preset: 'rei-adv',
+        riding_position: 'sport'
+      }, { onConflict: 'athlete_id' })
+      .select()
+      .single();
+
+    if (error) {
+      console.error('register upsert error:', error.message);
+      return res.status(500).json({ error: error.message });
+    }
+
+    res.json({ success: true, athlete_id: athleteId, name: `${athlete.firstname} ${athlete.lastname}` });
+  } catch (err) {
+    console.error('register error:', err.response?.data || err.message);
+    res.status(500).json({ error: err.response?.data || err.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
 // Fetch activity streams from Strava (frontend-initiated)
 // ---------------------------------------------------------------------------
 app.get('/api/activity/:id', async (req, res) => {
