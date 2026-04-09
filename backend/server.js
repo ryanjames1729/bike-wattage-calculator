@@ -413,14 +413,21 @@ app.post('/webhook', async (req, res) => {
   res.json({ received: true });
 
   const event = req.body;
+  console.log(`Webhook received: object_type=${event.object_type} aspect_type=${event.aspect_type} object_id=${event.object_id} owner_id=${event.owner_id}`);
 
   // Only handle new activity events
-  if (event.object_type !== 'activity' || event.aspect_type !== 'create') return;
+  if (event.object_type !== 'activity' || event.aspect_type !== 'create') {
+    console.log(`Webhook: ignoring event (object_type=${event.object_type}, aspect_type=${event.aspect_type})`);
+    return;
+  }
 
   const activityId = event.object_id;
   const athleteId = event.owner_id?.toString();
 
-  if (!activityId || !athleteId) return;
+  if (!activityId || !athleteId) {
+    console.warn(`Webhook: missing activityId or athleteId`);
+    return;
+  }
   if (!supabase) {
     console.warn('Webhook received but Supabase not configured — skipping auto-sync');
     return;
@@ -430,13 +437,18 @@ app.post('/webhook', async (req, res) => {
     // Fetch athlete record from Supabase
     let athlete = await getAthlete(athleteId);
     if (!athlete) {
-      console.log(`Webhook: no athlete record for ${athleteId}, skipping`);
+      console.log(`Webhook: no athlete record for ${athleteId} in Supabase, skipping`);
       return;
     }
+    console.log(`Webhook: found athlete ${athleteId}, bike_preset=${athlete.bike_preset}, riding_position=${athlete.riding_position}`);
 
     // Refresh token if needed
     athlete = await refreshStravaToken(athlete);
     const token = athlete.access_token;
+
+    // Strava sometimes fires the webhook before the activity is fully processed.
+    // Wait a few seconds to let GPS/stream data become available.
+    await new Promise(resolve => setTimeout(resolve, 5000));
 
     // Fetch activity details
     const activityResp = await axios.get(
@@ -444,10 +456,12 @@ app.post('/webhook', async (req, res) => {
       { headers: { Authorization: `Bearer ${token}` } }
     );
     const activity = activityResp.data;
+    console.log(`Webhook: activity type=${activity.type} sport_type=${activity.sport_type}`);
 
-    // Only process ride types
-    if (!RIDE_TYPES.has(activity.type)) {
-      console.log(`Webhook: skipping activity type '${activity.type}'`);
+    // Check both deprecated 'type' and current 'sport_type' fields
+    const activityType = activity.sport_type || activity.type;
+    if (!RIDE_TYPES.has(activityType)) {
+      console.log(`Webhook: skipping non-ride activity type '${activityType}'`);
       return;
     }
 
@@ -472,6 +486,7 @@ app.post('/webhook', async (req, res) => {
       time:     rawStreams.time?.data     || [],
       distance: rawStreams.distance?.data || []
     };
+    console.log(`Webhook: streams fetched — latlng points: ${streams.latlng.length}, time points: ${streams.time.length}`);
 
     // Calculate power
     const bikePreset = athlete.bike_preset || 'rei-adv';
@@ -479,7 +494,7 @@ app.post('/webhook', async (req, res) => {
     const result = calculatePowerFromStreams(streams, bikePreset, ridingPosition);
 
     if (!result) {
-      console.log(`Webhook: power calculation returned null for activity ${activityId}`);
+      console.log(`Webhook: power calculation returned null for activity ${activityId} (insufficient GPS data?)`);
       return;
     }
 
@@ -537,6 +552,91 @@ app.get('/webhook/register', async (req, res) => {
     res.json({ success: true, subscription: resp.data });
   } catch (err) {
     console.error('Webhook registration error:', err.response?.data || err.message);
+    res.status(500).json({ error: err.response?.data || err.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Manual trigger: process a specific activity through the power analyzer
+// GET /webhook/process?activity_id=123&athlete_id=456
+// ---------------------------------------------------------------------------
+app.get('/webhook/process', async (req, res) => {
+  const { activity_id: activityId, athlete_id: athleteId } = req.query;
+
+  if (!activityId || !athleteId) {
+    return res.status(400).json({ error: 'activity_id and athlete_id are required' });
+  }
+  if (!supabase) {
+    return res.status(503).json({ error: 'Supabase not configured' });
+  }
+
+  try {
+    let athlete = await getAthlete(athleteId);
+    if (!athlete) {
+      return res.status(404).json({ error: `No athlete record for ${athleteId}` });
+    }
+
+    athlete = await refreshStravaToken(athlete);
+    const token = athlete.access_token;
+
+    const activityResp = await axios.get(
+      `https://www.strava.com/api/v3/activities/${activityId}`,
+      { headers: { Authorization: `Bearer ${token}` } }
+    );
+    const activity = activityResp.data;
+
+    const activityType = activity.sport_type || activity.type;
+    if (!RIDE_TYPES.has(activityType)) {
+      return res.status(400).json({ error: `Not a ride activity (type: ${activityType})` });
+    }
+
+    if (activity.description && activity.description.includes('⚡ Power Analysis')) {
+      return res.json({ skipped: true, reason: 'Already has power analysis' });
+    }
+
+    const streamsResp = await axios.get(
+      `https://www.strava.com/api/v3/activities/${activityId}/streams`,
+      {
+        headers: { Authorization: `Bearer ${token}` },
+        params: { keys: 'latlng,altitude,time,distance', key_by_type: true }
+      }
+    );
+    const rawStreams = streamsResp.data;
+    const streams = {
+      latlng:   rawStreams.latlng?.data   || [],
+      altitude: rawStreams.altitude?.data || [],
+      time:     rawStreams.time?.data     || [],
+      distance: rawStreams.distance?.data || []
+    };
+
+    const bikePreset = athlete.bike_preset || 'rei-adv';
+    const ridingPosition = athlete.riding_position || 'sport';
+    const result = calculatePowerFromStreams(streams, bikePreset, ridingPosition);
+
+    if (!result) {
+      return res.status(422).json({ error: 'Power calculation failed (insufficient GPS data)' });
+    }
+
+    const { avgWatts, peakWatts, wPerKg } = result;
+    const powerBlock = [
+      '⚡ Power Analysis (Cycling Power Analyzer)',
+      `Average Power: ${avgWatts} W`,
+      `Peak Power (95th %ile): ${peakWatts} W`,
+      `Power-to-Weight: ${wPerKg} W/kg`
+    ].join('\n');
+
+    const existingDesc = activity.description || '';
+    const newDescription = existingDesc ? `${existingDesc}\n\n${powerBlock}` : powerBlock;
+
+    await axios.put(
+      `https://www.strava.com/api/v3/activities/${activityId}`,
+      { description: newDescription },
+      { headers: { Authorization: `Bearer ${token}` } }
+    );
+
+    res.json({ success: true, avgWatts, peakWatts, wPerKg });
+  } catch (err) {
+    console.error('Manual process error:', err.response?.data || err.message);
     res.status(500).json({ error: err.response?.data || err.message });
   }
 });
