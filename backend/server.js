@@ -559,25 +559,36 @@ app.get('/webhook/register', async (req, res) => {
 // ---------------------------------------------------------------------------
 // Manual trigger: process a specific activity through the power analyzer
 // GET /webhook/process?activity_id=123&athlete_id=456
+// Optionally pass &token=ACCESS_TOKEN to bypass Supabase lookup
 // ---------------------------------------------------------------------------
 app.get('/webhook/process', async (req, res) => {
-  const { activity_id: activityId, athlete_id: athleteId } = req.query;
+  const { activity_id: activityId, athlete_id: athleteId, token: directToken } = req.query;
 
-  if (!activityId || !athleteId) {
-    return res.status(400).json({ error: 'activity_id and athlete_id are required' });
-  }
-  if (!supabase) {
-    return res.status(503).json({ error: 'Supabase not configured' });
+  if (!activityId) {
+    return res.status(400).json({ error: 'activity_id is required' });
   }
 
   try {
-    let athlete = await getAthlete(athleteId);
-    if (!athlete) {
-      return res.status(404).json({ error: `No athlete record for ${athleteId}` });
-    }
+    let token;
+    let bikePreset = 'rei-adv';
+    let ridingPosition = 'sport';
 
-    athlete = await refreshStravaToken(athlete);
-    const token = athlete.access_token;
+    if (directToken) {
+      // Bypass Supabase — use the token directly
+      token = directToken;
+    } else {
+      if (!athleteId) return res.status(400).json({ error: 'athlete_id or token is required' });
+      if (!supabase) return res.status(503).json({ error: 'Supabase not configured' });
+
+      let athlete = await getAthlete(athleteId);
+      if (!athlete) {
+        return res.status(404).json({ error: `No athlete record for ${athleteId}` });
+      }
+      athlete = await refreshStravaToken(athlete);
+      token = athlete.access_token;
+      bikePreset = athlete.bike_preset || 'rei-adv';
+      ridingPosition = athlete.riding_position || 'sport';
+    }
 
     const activityResp = await axios.get(
       `https://www.strava.com/api/v3/activities/${activityId}`,
@@ -609,8 +620,6 @@ app.get('/webhook/process', async (req, res) => {
       distance: rawStreams.distance?.data || []
     };
 
-    const bikePreset = athlete.bike_preset || 'rei-adv';
-    const ridingPosition = athlete.riding_position || 'sport';
     const result = calculatePowerFromStreams(streams, bikePreset, ridingPosition);
 
     if (!result) {
