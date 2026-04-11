@@ -551,7 +551,8 @@ app.post('/webhook', async (req, res) => {
       '⚡ Power Analysis (Cycling Power Analyzer)',
       `Average Power: ${avgWatts} W`,
       `Peak Power (95th %ile): ${peakWatts} W`,
-      `Power-to-Weight: ${wPerKg} W/kg`
+      `Power-to-Weight: ${wPerKg} W/kg`,
+      'Calculated using physics-based modeling — https://ryanjames1729.github.io/bike-wattage-calculator/'
     ].join('\n');
 
     // Append to existing description
@@ -677,7 +678,8 @@ app.get('/webhook/process', async (req, res) => {
       '⚡ Power Analysis (Cycling Power Analyzer)',
       `Average Power: ${avgWatts} W`,
       `Peak Power (95th %ile): ${peakWatts} W`,
-      `Power-to-Weight: ${wPerKg} W/kg`
+      `Power-to-Weight: ${wPerKg} W/kg`,
+      'Calculated using physics-based modeling — https://ryanjames1729.github.io/bike-wattage-calculator/'
     ].join('\n');
 
     const existingDesc = activity.description || '';
