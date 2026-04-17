@@ -493,8 +493,8 @@ app.post('/webhook', async (req, res) => {
     const token = athlete.access_token;
 
     // Strava sometimes fires the webhook before the activity is fully processed.
-    // Wait a few seconds to let GPS/stream data become available.
-    await new Promise(resolve => setTimeout(resolve, 5000));
+    // Wait briefly to let GPS/stream data become available.
+    await new Promise(resolve => setTimeout(resolve, 2000));
 
     // Fetch activity details
     const activityResp = await axios.get(
