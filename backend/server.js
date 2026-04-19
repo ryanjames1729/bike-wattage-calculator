@@ -241,7 +241,7 @@ async function refreshStravaToken(athlete) {
 // Middleware
 // ---------------------------------------------------------------------------
 app.use(cors({
-  origin: FRONTEND_URL,
+  origin: new URL(FRONTEND_URL).origin,
   credentials: true
 }));
 app.use(express.json());
