@@ -455,123 +455,34 @@ const RIDE_TYPES = new Set([
 ]);
 
 app.post('/webhook', async (req, res) => {
-  // Acknowledge immediately per Strava requirements
-  res.json({ received: true });
-
   const event = req.body;
   console.log(`Webhook received: object_type=${event.object_type} aspect_type=${event.aspect_type} object_id=${event.object_id} owner_id=${event.owner_id}`);
 
-  // Only handle new activity events
-  if (event.object_type !== 'activity' || event.aspect_type !== 'create') {
+  if (event.object_type === 'activity' && event.aspect_type === 'create') {
+    const activityId = event.object_id;
+    const athleteId = event.owner_id?.toString();
+
+    if (activityId && athleteId && supabase) {
+      // Trigger processing as a separate Vercel function invocation so it gets
+      // its own execution timeout (Vercel freezes this function once res.json() is called).
+      const protocol = req.headers['x-forwarded-proto'] || req.protocol;
+      const host = req.get('host');
+      const processUrl = `${protocol}://${host}/webhook/process?activity_id=${activityId}&athlete_id=${athleteId}`;
+      console.log(`Webhook: triggering process for activity ${activityId}, athlete ${athleteId}`);
+      axios.get(processUrl).catch(err => console.error('Webhook process trigger failed:', err.message));
+
+      // Brief pause to allow the outgoing HTTP request to be transmitted before
+      // this function is frozen by Vercel.
+      await new Promise(r => setTimeout(r, 200));
+    } else {
+      if (!supabase) console.warn('Webhook received but Supabase not configured — skipping');
+      else console.warn('Webhook: missing activityId or athleteId');
+    }
+  } else {
     console.log(`Webhook: ignoring event (object_type=${event.object_type}, aspect_type=${event.aspect_type})`);
-    return;
   }
 
-  const activityId = event.object_id;
-  const athleteId = event.owner_id?.toString();
-
-  if (!activityId || !athleteId) {
-    console.warn(`Webhook: missing activityId or athleteId`);
-    return;
-  }
-  if (!supabase) {
-    console.warn('Webhook received but Supabase not configured — skipping auto-sync');
-    return;
-  }
-
-  try {
-    // Fetch athlete record from Supabase
-    let athlete = await getAthlete(athleteId);
-    if (!athlete) {
-      console.log(`Webhook: no athlete record for ${athleteId} in Supabase, skipping`);
-      return;
-    }
-    console.log(`Webhook: found athlete ${athleteId}, bike_preset=${athlete.bike_preset}, riding_position=${athlete.riding_position}`);
-
-    // Refresh token if needed
-    athlete = await refreshStravaToken(athlete);
-    const token = athlete.access_token;
-
-    // Strava sometimes fires the webhook before the activity is fully processed.
-    // Wait briefly to let GPS/stream data become available.
-    await new Promise(resolve => setTimeout(resolve, 2000));
-
-    // Fetch activity details
-    const activityResp = await axios.get(
-      `https://www.strava.com/api/v3/activities/${activityId}`,
-      { headers: { Authorization: `Bearer ${token}` } }
-    );
-    const activity = activityResp.data;
-    console.log(`Webhook: activity type=${activity.type} sport_type=${activity.sport_type}`);
-
-    // Check both deprecated 'type' and current 'sport_type' fields
-    const activityType = activity.sport_type || activity.type;
-    if (!RIDE_TYPES.has(activityType)) {
-      console.log(`Webhook: skipping non-ride activity type '${activityType}'`);
-      return;
-    }
-
-    // Skip if already processed
-    if (activity.description && activity.description.includes('⚡ Power Analysis')) {
-      console.log(`Webhook: activity ${activityId} already has power analysis, skipping`);
-      return;
-    }
-
-    // Fetch GPS streams
-    const streamsResp = await axios.get(
-      `https://www.strava.com/api/v3/activities/${activityId}/streams`,
-      {
-        headers: { Authorization: `Bearer ${token}` },
-        params: { keys: 'latlng,altitude,time,distance', key_by_type: true }
-      }
-    );
-    const rawStreams = streamsResp.data;
-    const streams = {
-      latlng:   rawStreams.latlng?.data   || [],
-      altitude: rawStreams.altitude?.data || [],
-      time:     rawStreams.time?.data     || [],
-      distance: rawStreams.distance?.data || []
-    };
-    console.log(`Webhook: streams fetched — latlng points: ${streams.latlng.length}, time points: ${streams.time.length}`);
-
-    // Calculate power
-    const bikePreset = athlete.bike_preset || 'rei-adv';
-    const ridingPosition = athlete.riding_position || 'sport';
-    const result = calculatePowerFromStreams(streams, bikePreset, ridingPosition);
-
-    if (!result) {
-      console.log(`Webhook: power calculation returned null for activity ${activityId} (insufficient GPS data?)`);
-      return;
-    }
-
-    const { avgWatts, peakWatts, wPerKg } = result;
-
-    // Build the power analysis description block
-    const powerBlock = [
-      '⚡ Power Analysis (Cycling Power Analyzer)',
-      `Average Power: ${avgWatts} W`,
-      `Peak Power (95th %ile): ${peakWatts} W`,
-      `Power-to-Weight: ${wPerKg} W/kg`,
-      'Calculated using physics-based modeling — https://ryanjames1729.github.io/bike-wattage-calculator/'
-    ].join('\n');
-
-    // Append to existing description
-    const existingDesc = activity.description || '';
-    const newDescription = existingDesc
-      ? `${existingDesc}\n\n${powerBlock}`
-      : powerBlock;
-
-    // Update activity description via Strava API
-    await axios.put(
-      `https://www.strava.com/api/v3/activities/${activityId}`,
-      { description: newDescription },
-      { headers: { Authorization: `Bearer ${token}` } }
-    );
-
-    console.log(`Webhook: updated activity ${activityId} — avg ${avgWatts}W, peak ${peakWatts}W`);
-  } catch (err) {
-    console.error(`Webhook processing error for activity ${activityId}:`, err.response?.data || err.message);
-  }
+  res.json({ received: true });
 });
 
 // ---------------------------------------------------------------------------
